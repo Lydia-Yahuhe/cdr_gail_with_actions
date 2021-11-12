@@ -27,10 +27,10 @@ def args_parser():
     parser.add_argument('--expert_path', type=str, default='.\\dataset\\random_policy_125_all.npz')
     parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
     # Task
-    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='evaluate')
+    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='test')
     # for evaluation
     boolean_flag(parser, 'save_sample', default=False, help='save the trajectories or not')
-    #  Mujoco Dataset Configuration
+    # Mujoco Dataset Configuration
     parser.add_argument('--traj_limitation', type=int, default=-1)
     # Optimization Configuration
     parser.add_argument('--g_step', help='number of steps to train policy in each epoch', type=int, default=3)
@@ -42,12 +42,12 @@ def args_parser():
     parser.add_argument('--max_kl', type=float, default=0.01)
     parser.add_argument('--policy_entcoeff', help='entropy coefficiency of policy', type=float, default=1e-3)
     parser.add_argument('--adversary_entcoeff', help='entropy coefficiency of discriminator', type=float, default=1e-3)
-    # Traing Configuration
+    # Training Configuration
     parser.add_argument('--save_per_iter', help='save model every xx iterations', type=int, default=2)
     parser.add_argument('--num_timesteps', help='number of timesteps per episode', type=int, default=int(5e6))
     # Behavior Cloning
     boolean_flag(parser, 'pretrained', default=True, help='Use BC to pretrain')
-    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e4))
+    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(0))
     return parser.parse_args()
 
 
@@ -102,14 +102,12 @@ def main():
         #                max_kl=0.01, cg_iters=10, cg_damping=0.1,
         #                gamma=0.995, lam=0.97,
         #                vf_iters=5, vf_stepsize=1e-3)
-    elif args.task == 'evaluate':
+    else:
         output_gail_policy(env,
                            policy_fn,
                            save_dir,
                            task_name+'_'+args.task,
                            stochastic_policy=False)
-    else:
-        raise NotImplementedError
     env.close()
 
 

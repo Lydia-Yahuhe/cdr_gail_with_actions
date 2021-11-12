@@ -76,8 +76,8 @@ class TransitionClassifier(object):
                 self.obs_rms = RunningMeanStd(shape=self.observation_shape)
             obs = (obs_ph - self.obs_rms.mean) / self.obs_rms.std
             _input = tf.concat([obs, acs_ph], axis=1)  # concatenate the two input -> form a transition
-            p_h1 = tf.contrib.layers.fully_connected(_input, hidden_size, activation_fn=tf.nn.tanh)
-            p_h2 = tf.contrib.layers.fully_connected(p_h1, hidden_size, activation_fn=tf.nn.tanh)
+            p_h1 = tf.contrib.layers.fully_connected(_input, hidden_size, activation_fn=tf.nn.relu)
+            p_h2 = tf.contrib.layers.fully_connected(p_h1, hidden_size, activation_fn=tf.nn.relu)
             logits = tf.contrib.layers.fully_connected(p_h2, 1, activation_fn=tf.identity)
         return logits
 

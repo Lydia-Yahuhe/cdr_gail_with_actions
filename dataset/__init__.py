@@ -38,7 +38,7 @@ def get_pdf_or_kde(input_array, bins):
 def visual(x, y, bins, show=True):
     # 图表设置
     plt.rcParams['axes.unicode_minus'] = False  # 显示负号
-    plt.rcParams['figure.figsize'] = (100, 100)  # 设定图片大小
+    # plt.rcParams['figure.figsize'] = (50, 50)  # 设定图片大小
     f = plt.figure()  # 确定画布
 
     sns.set()  # 设置seaborn默认格式
@@ -49,7 +49,7 @@ def visual(x, y, bins, show=True):
     gail_kde = get_pdf_or_kde(y, bins=bins)
     kl = round(kl_divergence(dqn_kde, gail_kde), 3)
 
-    f.add_subplot(1, 2, 1)
+    f.add_subplot(2, 1, 1)
     plt.hist([x, y], bins=bins, range=(0, bins), density=True, align='left', label=['DQN', 'GAIL'])  # 绘制x的密度直方图
 
     plt.xlabel('Action index')
@@ -59,7 +59,7 @@ def visual(x, y, bins, show=True):
     plt.title("The histogram of DQN and GAIL policy", fontsize=12)  # 设置子图标题
     plt.legend()
 
-    f.add_subplot(1, 2, 2)
+    f.add_subplot(2, 1, 2)
     sns.distplot(x, bins=bins, hist=False, label='DQN')  # 绘制x的密度直方图
     sns.distplot(y, bins=bins, hist=False, label='GAIL')  # 绘制y的密度直方图
     plt.xlabel('Action index')
@@ -111,7 +111,7 @@ def visual_action_distribution():
     print('LP SR:', len(dqn_rew) / size * 100, np.mean(dqn_rew))
 
     # Imitation Policy
-    gail_policy = np.load('gail.seed_0.iters_5000000.BC_10000_evaluate.npz')
+    gail_policy = np.load('gail.seed_0.iters_5000000.BC_0_test.npz')
     gail_rew = gail_policy['rews']
     print('IP SR:', len(gail_rew) / size * 100, np.mean(gail_rew))
 
