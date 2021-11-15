@@ -100,9 +100,9 @@ class ConflictEnv(gym.Env, ABC):
             while not done:
                 if 'gail' in save_path:
                     action, _ = act(kwargs['stochastic'], obs)
+                    action = np.argmax(action)
                     print('gail', action)
-                    action = int(action[0]*54+54)
-                    print(action)
+                    # action = int(action[0]*54+54)
                 elif 'dqn' in save_path:
                     action = act(np.array(obs)[None])[0]
                     print('dqn', action)

@@ -24,10 +24,10 @@ from fltenv.env import ConflictEnv
 def args_parser():
     parser = argparse.ArgumentParser("Tensorflow Implementation of GAIL")
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--expert_path', type=str, default='.\\dataset\\random_policy_125_all.npz')
+    parser.add_argument('--expert_path', type=str, default='.\\dataset\\random_policy_1250_all.npz')
     parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
     # Task
-    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='test')
+    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='train')
     # for evaluation
     boolean_flag(parser, 'save_sample', default=False, help='save the trajectories or not')
     # Mujoco Dataset Configuration
@@ -47,7 +47,7 @@ def args_parser():
     parser.add_argument('--num_timesteps', help='number of timesteps per episode', type=int, default=int(5e6))
     # Behavior Cloning
     boolean_flag(parser, 'pretrained', default=True, help='Use BC to pretrain')
-    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(0))
+    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e5))
     return parser.parse_args()
 
 
@@ -57,7 +57,8 @@ def main():
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
 
-    env = ConflictEnv(limit=0, act='Box', reverse=args.task == 'evaluate')
+    env = ConflictEnv(limit=0, reverse=args.task == 'evaluate')
+    # env = ConflictEnv(limit=0, act='Box', reverse=args.task == 'evaluate')
     env = bench.Monitor(env, logger.get_dir() and osp.join(logger.get_dir(), "monitor.json"))
     env.seed(args.seed)
     gym.logger.setLevel(logging.WARN)
@@ -77,19 +78,19 @@ def main():
         # expert demonstrations
         dataset = Mujoco_Dset(expert_path=args.expert_path)
 
-        reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
+        # reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
 
         if args.pretrained:
             # Pretrain with behavior cloning
             behavior_clone.learn(env, policy_fn, dataset, ckpt_dir=save_dir, max_iters=args.BC_max_iter, verbose=True)
 
         # Set up for MPI seed
-        rank = MPI.COMM_WORLD.Get_rank()
-        if rank != 0:
-            logger.set_level(logger.DISABLED)
-        worker_seed = args.seed + 10000 * MPI.COMM_WORLD.Get_rank()
-        set_global_seeds(worker_seed)
-        env.seed(worker_seed)
+        # rank = MPI.COMM_WORLD.Get_rank()
+        # if rank != 0:
+        #     logger.set_level(logger.DISABLED)
+        # worker_seed = args.seed + 10000 * MPI.COMM_WORLD.Get_rank()
+        # set_global_seeds(worker_seed)
+        # env.seed(worker_seed)
 
         # trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
         #                pretrained_weight=args.pretrained,

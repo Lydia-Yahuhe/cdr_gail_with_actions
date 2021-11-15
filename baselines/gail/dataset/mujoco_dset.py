@@ -45,8 +45,11 @@ class Mujoco_Dset(object):
         if traj_limitation < 0:
             traj_limitation = len(traj_data['obs'])
         obs = traj_data['obs'][:traj_limitation]
-        acs = (traj_data['acs'][:traj_limitation] - 54) / 54
-        print(acs.shape)
+        acs = traj_data['acs'][:traj_limitation]
+
+        # acs = (traj_data['acs'][:traj_limitation] - 54) / 54
+        # acs = traj_data['acs'][:traj_limitation].astype(int)
+        print(obs.shape, acs.shape)
 
         # obs, acs: shape (N, L, ) + S where N = # episodes, L = episode length
         # and S is the environment observation/action space.
@@ -75,13 +78,13 @@ class Mujoco_Dset(object):
         self.val_set = Dset(self.obs[int(self.num_transition * train_fraction):, :],
                             self.acs[int(self.num_transition * train_fraction):, ],
                             self.randomize)
-        self.log_info()
+        # self.log_info()
 
-    def log_info(self):
-        logger.log("Total trajectories: %d" % self.num_traj)
-        logger.log("Total transitions: %d" % self.num_transition)
-        # logger.log("Average returns: %f" % self.avg_ret)
-        # logger.log("Std for returns: %f" % self.std_ret)
+    # def log_info(self):
+    #     logger.log("Total trajectories: %d" % self.num_traj)
+    #     logger.log("Total transitions: %d" % self.num_transition)
+    #     logger.log("Average returns: %f" % self.avg_ret)
+    #     logger.log("Std for returns: %f" % self.std_ret)
 
     def get_next_batch(self, batch_size, split=None):
         if split is None:
