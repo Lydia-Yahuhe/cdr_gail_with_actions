@@ -7,7 +7,6 @@ import os.path as osp
 import logging
 from mpi4py import MPI
 
-import numpy as np
 import gym
 
 from baselines.common import set_global_seeds, tf_util as U
@@ -27,7 +26,7 @@ def args_parser():
     parser.add_argument('--expert_path', type=str, default='.\\dataset\\random_policy_125_all.npz')
     parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
     # Task
-    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='evaluate')
+    parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'test'], default='train')
     # for evaluation
     boolean_flag(parser, 'save_sample', default=False, help='save the trajectories or not')
     # Mujoco Dataset Configuration
@@ -44,10 +43,10 @@ def args_parser():
     parser.add_argument('--adversary_entcoeff', help='entropy coefficiency of discriminator', type=float, default=1e-3)
     # Training Configuration
     parser.add_argument('--save_per_iter', help='save model every xx iterations', type=int, default=2)
-    parser.add_argument('--num_timesteps', help='number of timesteps per episode', type=int, default=int(5e6))
+    parser.add_argument('--num_timesteps', help='number of timesteps per episode', type=int, default=int(1e5))
     # Behavior Cloning
-    boolean_flag(parser, 'pretrained', default=True, help='Use BC to pretrain')
-    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e5))
+    boolean_flag(parser, 'pretrained', default=False, help='Use BC to pretrain')
+    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e3))
     return parser.parse_args()
 
 
@@ -78,31 +77,31 @@ def main():
         # expert demonstrations
         dataset = Mujoco_Dset(expert_path=args.expert_path)
 
-        # reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
+        reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
 
         if args.pretrained:
             # Pretrain with behavior cloning
-            behavior_clone.learn(env, policy_fn, dataset, ckpt_dir=save_dir, max_iters=args.BC_max_iter, verbose=True)
+            behavior_clone.learn(env, policy_fn, dataset, ckpt_dir=save_dir, max_iters=args.BC_max_iter)
 
         # Set up for MPI seed
-        # rank = MPI.COMM_WORLD.Get_rank()
-        # if rank != 0:
-        #     logger.set_level(logger.DISABLED)
-        # worker_seed = args.seed + 10000 * MPI.COMM_WORLD.Get_rank()
-        # set_global_seeds(worker_seed)
-        # env.seed(worker_seed)
+        rank = MPI.COMM_WORLD.Get_rank()
+        if rank != 0:
+            logger.set_level(logger.DISABLED)
+        worker_seed = args.seed + 10000 * MPI.COMM_WORLD.Get_rank()
+        set_global_seeds(worker_seed)
+        env.seed(worker_seed)
 
-        # trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
-        #                pretrained_weight=args.pretrained,
-        #                g_step=args.g_step, d_step=args.d_step,
-        #                entcoeff=args.policy_entcoeff,
-        #                max_timesteps=args.num_timesteps,
-        #                ckpt_dir=save_dir,
-        #                save_per_iter=args.save_per_iter,
-        #                timesteps_per_batch=64,
-        #                max_kl=0.01, cg_iters=10, cg_damping=0.1,
-        #                gamma=0.995, lam=0.97,
-        #                vf_iters=5, vf_stepsize=1e-3)
+        trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
+                       pretrained_weight=args.pretrained,
+                       g_step=args.g_step, d_step=args.d_step,
+                       entcoeff=args.policy_entcoeff,
+                       max_timesteps=args.num_timesteps,
+                       ckpt_dir=save_dir,
+                       save_per_iter=args.save_per_iter,
+                       timesteps_per_batch=32,
+                       max_kl=0.01, cg_iters=10, cg_damping=0.1,
+                       gamma=0.995, lam=0.97,
+                       vf_iters=5, vf_stepsize=1e-3)
     else:
         output_gail_policy(env,
                            policy_fn,
@@ -129,5 +128,3 @@ def output_gail_policy(env, policy_func, load_model_path, task_name, stochastic_
 
 if __name__ == '__main__':
     main()
-    # for key, value in np.load('.\\dataset\\gail_policy.npz').items():
-    #     print(key, value.shape, value)

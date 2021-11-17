@@ -1,6 +1,6 @@
-'''
+"""
 This code is highly based on https://github.com/carpedm20/deep-rl-tensorflow/blob/master/agents/statistic.py
-'''
+"""
 
 import tensorflow as tf
 import numpy as np
@@ -8,11 +8,10 @@ import numpy as np
 import baselines.common.tf_util as U
 
 
-class stats():
-
-    def __init__(self, scalar_keys=[], histogram_keys=[]):
-        self.scalar_keys = scalar_keys
-        self.histogram_keys = histogram_keys
+class TensorStats:
+    def __init__(self, scalar_keys=None, histogram_keys=None):
+        self.scalar_keys = scalar_keys if scalar_keys is not None else []
+        self.histogram_keys = histogram_keys if histogram_keys is not None else []
         self.scalar_summaries = []
         self.scalar_summaries_ph = []
         self.histogram_summaries_ph = []
@@ -36,6 +35,7 @@ class stats():
         #            ```scalar_keys``` given in ```__init__```
         if np.sum(np.isnan(values)+0) != 0:
             return
+
         sess = U.get_session()
         keys = self.scalar_summaries_ph + self.histogram_summaries_ph
         feed_dict = {}

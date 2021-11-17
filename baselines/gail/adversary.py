@@ -1,20 +1,24 @@
-'''
+"""
 Reference: https://github.com/openai/imitation
 I follow the architecture from the official repository
-'''
+"""
 import tensorflow as tf
 import numpy as np
 
+from baselines import logger
+from baselines.common.mpi_adam import MpiAdam
 from baselines.common.mpi_running_mean_std import RunningMeanStd
 from baselines.common import tf_util as U
 
 
 def logsigmoid(a):
-    '''Equivalent to tf.log(tf.sigmoid(a))'''
+    """Equivalent to tf.log(tf.sigmoid(a))"""
     return -tf.nn.softplus(-a)
 
 
-""" Reference: https://github.com/openai/imitation/blob/99fbccf3e060b6e6c739bdf209758620fcdefd3c/policyopt/thutil.py#L48-L51"""
+"""
+Reference: https://github.com/openai/imitation/blob/99fbccf3e060b6e6c739bdf209758620fcdefd3c/policyopt/thutil.py#L48-L51
+"""
 
 
 def logit_bernoulli_entropy(logits):
@@ -26,8 +30,8 @@ class TransitionClassifier(object):
     def __init__(self, env, hidden_size, entcoeff=0.001, scope="adversary"):
         self.scope = scope
         self.observation_shape = env.observation_space.shape
-        # self.actions_shape = (env.action_space.n, )
-        self.actions_shape = env.action_space.shape
+        self.actions_shape = (env.action_space.n, )
+        # self.actions_shape = env.action_space.shape
 
         self.generator_obs_ph = tf.placeholder(tf.float32, (None,) + self.observation_shape, name="observations_ph")
         self.generator_acs_ph = tf.placeholder(tf.float32, (None,) + self.actions_shape, name="actions_ph")
@@ -39,8 +43,8 @@ class TransitionClassifier(object):
         expert_logits = self.__build_graph(self.expert_obs_ph, self.expert_acs_ph, hidden_size=hidden_size, reuse=True)
 
         # Build accuracy
-        generator_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(generator_logits) < 0.5))
-        expert_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(expert_logits) > 0.5))
+        generator_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(generator_logits) <= 0.005))
+        expert_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(expert_logits) >= 0.995))
 
         # Build regression loss
         # let x = logits, z = targets.
@@ -56,13 +60,14 @@ class TransitionClassifier(object):
         entropy_loss = -entcoeff * entropy
 
         # Loss + Accuracy terms
-        self.losses = [generator_loss, expert_loss, entropy, entropy_loss, generator_acc, expert_acc]
-        self.loss_name = ["generator_loss", "expert_loss", "entropy", "entropy_loss", "generator_acc", "expert_acc"]
         self.total_loss = generator_loss + expert_loss + entropy_loss
+        self.losses = [generator_loss, expert_loss, entropy, entropy_loss, generator_acc, expert_acc, self.total_loss]
+        self.loss_name = ["generator_loss", "expert_loss", "entropy", "entropy_loss", "generator_acc", "expert_acc", "total_loss"]
 
         # Build Reward for policy
         self.reward_op = -tf.log(1 - tf.nn.sigmoid(generator_logits) + 1e-8)
         var_list = self.get_trainable_variables()
+        self.adam = MpiAdam(var_list, epsilon=1e-5)
         self.lossandgrad = U.function(
             [self.generator_obs_ph, self.generator_acs_ph, self.expert_obs_ph, self.expert_acs_ph],
             self.losses + [U.flatgrad(self.total_loss, var_list)])
@@ -76,13 +81,16 @@ class TransitionClassifier(object):
                 self.obs_rms = RunningMeanStd(shape=self.observation_shape)
             obs = (obs_ph - self.obs_rms.mean) / self.obs_rms.std
             _input = tf.concat([obs, acs_ph], axis=1)  # concatenate the two input -> form a transition
-            p_h1 = tf.contrib.layers.fully_connected(_input, hidden_size, activation_fn=tf.nn.relu)
-            p_h2 = tf.contrib.layers.fully_connected(p_h1, hidden_size, activation_fn=tf.nn.relu)
+            p_h1 = tf.contrib.layers.fully_connected(_input, hidden_size, activation_fn=tf.nn.tanh)
+            p_h2 = tf.contrib.layers.fully_connected(p_h1, hidden_size, activation_fn=tf.nn.tanh)
             logits = tf.contrib.layers.fully_connected(p_h2, 1, activation_fn=tf.identity)
         return logits
 
     def get_trainable_variables(self):
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope)
+
+    def get_variables(self):
+        return tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.scope)
 
     def get_reward(self, obs, acs):
         sess = tf.get_default_session()
@@ -93,3 +101,88 @@ class TransitionClassifier(object):
         feed_dict = {self.generator_obs_ph: obs, self.generator_acs_ph: acs}
         reward = sess.run(self.reward_op, feed_dict)
         return reward[0][0]
+
+
+if __name__ == '__main__':
+    from tqdm import tqdm
+
+    from fltenv.env import ConflictEnv
+    from baselines.gail.dataset.mujoco_dset import Mujoco_Dset
+
+    env = ConflictEnv(limit=0)
+
+    dataset = Mujoco_Dset(expert_path='dataset\\random_policy_125_all.npz')
+
+    reward_giver = TransitionClassifier(env, 128, entcoeff=0.1)
+    adam = reward_giver.adam
+
+    U.initialize()
+    adam.sync()
+
+    num_steps = int(1e5)
+    num_actions = env.action_space.n
+    actions = list(range(num_actions))
+    col = []
+    for iter_so_far in tqdm(range(1, num_steps+1)):
+        ob_expert, ac_expert = dataset.get_next_batch(32)
+        ac_expert = ac_expert.squeeze()
+
+        ob_batch = ob_expert[:, :]
+        ac_batch = []
+        for ac_e in ac_expert:
+            np.random.shuffle(actions)
+            for act in actions:
+                if act != ac_e:
+                    ac_batch.append(act)
+                    break
+            else:
+                raise NotImplementedError
+        ac_batch = np.eye(num_actions)[ac_batch]
+        ac_expert = np.eye(num_actions)[ac_expert]
+        *train_loss, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
+        adam.update(g, 1e-4)
+
+        # print(train_loss)
+        col.append(train_loss)
+
+        if iter_so_far % 100 == 0:
+            train_loss = np.mean(col, axis=0)
+            print(train_loss.shape)
+            logger.record_tabular("step", iter_so_far)
+            logger.record_tabular("g_loss", train_loss[0])
+            logger.record_tabular("e_loss", train_loss[1])
+            logger.record_tabular("entropy", train_loss[2])
+            logger.record_tabular("entropy_loss", train_loss[3])
+            logger.record_tabular("g_acc", train_loss[4])
+            logger.record_tabular("e_acc", train_loss[5])
+            logger.record_tabular("t_loss", train_loss[6])
+
+            ob_expert, ac_expert = dataset.get_next_batch(-1)
+            ac_expert = np.squeeze(ac_expert)
+
+            ob_batch = ob_expert[:, :]
+            ac_batch = []
+            for ac_e in ac_expert:
+                np.random.shuffle(actions)
+                for act in actions:
+                    if act != ac_e:
+                        ac_batch.append(act)
+                        break
+                else:
+                    raise NotImplementedError
+            ac_batch = np.eye(num_actions)[ac_batch]
+            ac_expert = np.eye(num_actions)[ac_expert]
+
+            rewards_expert = reward_giver.get_reward(ob_expert, ac_expert)
+            logger.record_tabular("rewards_expert", np.mean(rewards_expert))
+
+            rewards_batch = reward_giver.get_reward(ob_batch, ac_batch)
+            logger.record_tabular("rewards_batch", np.mean(rewards_batch))
+
+            print(ac_expert.shape, ac_batch.shape, rewards_expert.shape, rewards_batch.shape)
+
+            logger.dump_tabular()
+
+            if iter_so_far % 10000 == 0:
+                U.save_variables('discriminator_{}'.format(num_steps), variables=reward_giver.get_variables())
+
