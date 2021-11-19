@@ -46,7 +46,7 @@ def args_parser():
     parser.add_argument('--num_timesteps', help='number of timesteps per episode', type=int, default=int(1e5))
     # Behavior Cloning
     boolean_flag(parser, 'pretrained', default=True, help='Use BC to pretrain')
-    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e3))
+    parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=int(1e2))
     return parser.parse_args()
 
 

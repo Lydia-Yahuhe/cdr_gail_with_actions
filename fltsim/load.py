@@ -123,6 +123,9 @@ def load_data(collection):
 
             # fpl
             startTime = f['startTime']
+            if startTime >= clock + 300:
+                continue
+
             starts.append(startTime)
             fpl = FlightPlan(id=f['id'], aircraft=ac, routing=routing, startTime=startTime,
                              min_alt=f['min_alt'], max_alt=f['max_alt'])

@@ -1,7 +1,7 @@
 """
 Disclaimer: The trpo part highly rely on trpo_mpi at @openai/baselines
 """
-
+import os.path
 import time
 from contextlib import contextmanager
 from mpi4py import MPI
@@ -18,13 +18,14 @@ from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 
 
-def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
+def traj_segment_generator(pi, env, reward_giver, data_set, horizon, stochastic):
     # Initialize state variables
     t = 0
     new = True
     rew = 0.0
     true_rew = 0.0
     ob = env.reset()
+    num_actions = env.action_space.n
 
     cur_ep_ret = 0
     cur_ep_true_ret = 0
@@ -36,7 +37,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
     rews = np.zeros(horizon, 'float32')
     vpreds = np.zeros(horizon, 'float32')
     news = np.zeros(horizon, 'int32')
-    acs = np.zeros([horizon, env.action_space.n], 'float32')
+    acs = np.zeros([horizon, num_actions], 'float32')
     names = ['' for _ in range(horizon)]
 
     while True:
@@ -53,15 +54,19 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
             ep_rets = []
             ep_true_rets = []
         i = t % horizon
+        scenario_name = env.scene.info.id
         obs[i] = ob
         vpreds[i] = vpred
         news[i] = new
         acs[i] = ac
-        names[i] = env.scene.info.id
+        names[i] = scenario_name
 
-        rew = reward_giver.get_reward(ob, ac)
-        print('{:>6.4f}'.format(round(rew, 4)), end=', ')
-        ob, true_rew, new, _ = env.step(np.argmax(ac))
+        ac_idx = np.argmax(ac)
+        rew = reward_giver.get_reward(ob, np.eye(num_actions)[ac_idx])[0][0]
+        ob_e, ac_e = data_set.get_action(scenario_name)
+        print('{:>+7.4f}, {:>4d}, {}'.format(round(rew, 4), ac_e, int((ob_e == ob).all())), end=', ')
+
+        ob, true_rew, new, _ = env.step(ac_idx)
         rews[i] = rew
 
         cur_ep_ret += rew
@@ -189,7 +194,7 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
     # Prepare for rollouts
     # ----------------------------------------
-    seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_batch, stochastic=True)
+    seg_gen = traj_segment_generator(pi, env, reward_giver, expert_dataset, timesteps_per_batch, stochastic=True)
 
     timesteps_so_far = 0
     iters_so_far = 0
@@ -201,8 +206,9 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
     # if provide pretrained weight
     if pretrained_weight:
-        # U.load_state(pretrained_weight, var_list=pi.get_variables())
         U.load_variables(ckpt_dir, variables=pi.get_variables())
+        # print(os.path.abspath('checkpoint\\discriminator_100000_125'))
+        U.load_variables('checkpoint\\discriminator_200000_125', variables=reward_giver.get_variables())
         print('Load previous trained variables successfully!')
 
     while True:
@@ -297,7 +303,6 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
         logger.log("Optimizing Discriminator...")
         ob_array = np.concatenate(ob_array)
         ac_array = np.concatenate(ac_array)
-        # print(ob_array.shape, ac_array.shape)
 
         batch_size = len(ob_array) // d_step
         d_losses = []  # list of tuples, each of which gives the loss for a mini-batch
@@ -305,14 +310,14 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
                                                       include_final_partial_batch=False,
                                                       batch_size=batch_size):
             real_batch_size = len(ob_batch)
-            ob_expert, ac_expert = expert_dataset.get_next_batch(real_batch_size, names=num_array[:real_batch_size])
+            ob_expert, ac_expert = expert_dataset.get_next_batch(batch_samples=num_array[:real_batch_size])
             # print(ob_batch.shape, ac_batch.shape, ob_expert.shape, ac_expert.shape)
             # update running mean/std for reward_giver
-            if hasattr(reward_giver, "obs_rms"): reward_giver.obs_rms.update(np.concatenate((ob_batch, ob_expert), 0))
+            # if hasattr(reward_giver, "obs_rms"): reward_giver.obs_rms.update(np.concatenate((ob_batch, ob_expert), 0))
 
             ac_expert = np.eye(env.action_space.n)[ac_expert]
             *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
-            d_adam.update(allmean(g), d_stepsize)
+            # d_adam.update(allmean(g), d_stepsize)
             d_losses.append(newlosses)
 
         for (name, loss) in zip(reward_giver.loss_name, np.mean(d_losses, axis=0)):
