@@ -1,3 +1,4 @@
+import math
 import os
 import tempfile
 
@@ -5,6 +6,7 @@ import tensorflow as tf
 import zipfile
 import cloudpickle
 import numpy as np
+from tqdm import tqdm
 
 import baselines.common.tf_util as U
 from baselines.common.tf_util import load_variables, save_variables
@@ -103,10 +105,10 @@ def learn(env,
           train_freq=1,
           batch_size=32,
           print_freq=100,
-          checkpoint_freq=10000,
-          checkpoint_path=None,
           learning_starts=1000,
           gamma=1.0,
+          reward_giver=None,
+          expert_dataset=None,
           target_network_update_freq=500,
           prioritized_replay=False,
           prioritized_replay_alpha=0.6,
@@ -114,10 +116,8 @@ def learn(env,
           prioritized_replay_beta_iters=None,
           prioritized_replay_eps=1e-6,
           param_noise=False,
-          callback=None,
           load_path=None,
-          **network_kwargs
-          ):
+          **network_kwargs):
     """Train a deepq model.
 
     Parameters
@@ -147,14 +147,14 @@ def learn(env,
     print_freq: int
         how often to print out training progress
         set to None to disable printing
-    checkpoint_freq: int
-        how often to save the model. This is so that the best version is restored
-        at the end of the training. If you do not wish to restore the best version at
-        the end of the training set this variable to None.
     learning_starts: int
         how many steps of the model to collect transitions for before learning starts
     gamma: float
         discount factor
+    reward_giver: object
+        GAN network
+    expert_dataset: object
+        expert demonstrations
     target_network_update_freq: int
         update the target network every `target_network_update_freq` steps.
     prioritized_replay: True
@@ -170,9 +170,6 @@ def learn(env,
         epsilon to add to the TD errors when updating priorities.
     param_noise: bool
         whether or not to use parameter space noise (https://arxiv.org/abs/1706.01905)
-    callback: (locals, globals) -> None
-        function called at every steps with state of the algorithm.
-        If callback returns true training stops.
     load_path: str
         path to load the model from. (default: None)
     **network_kwargs
@@ -195,6 +192,7 @@ def learn(env,
     # by cloudpickle when serializing make_obs_ph
 
     observation_space = env.observation_space
+    num_actions = env.action_space.n
 
     def make_obs_ph(name):
         return ObservationInput(observation_space, name=name)
@@ -202,7 +200,7 @@ def learn(env,
     act, train, update_target, debug = deepq.build_train(
         make_obs_ph=make_obs_ph,
         q_func=q_func,
-        num_actions=env.action_space.n,
+        num_actions=num_actions,
         optimizer=tf.train.AdamOptimizer(learning_rate=lr),
         gamma=gamma,
         grad_norm_clipping=10,
@@ -212,7 +210,7 @@ def learn(env,
     act_params = {
         'make_obs_ph': make_obs_ph,
         'q_func': q_func,
-        'num_actions': env.action_space.n,
+        'num_actions': num_actions,
     }
 
     act = ActWrapper(act, act_params)
@@ -235,87 +233,114 @@ def learn(env,
 
     # Initialize the parameters and copy them to the target network.
     U.initialize()
+    U.load_variables('checkpoint\\discriminator_200000_125', variables=reward_giver.get_variables())
+    print('load variables successfully!')
+
+    train_bc = debug['train_bc']
+    logger.log("Pretraining with Behavior Cloning...")
+    for iter_so_far in tqdm(range(int(1e3))):
+        ob_expert, ac_expert = expert_dataset.get_next_batch(32)
+        train_loss = train_bc(ob_expert, ac_expert)
+
+        if iter_so_far % 100 == 0:
+            ob_expert, ac_expert = expert_dataset.get_next_batch(-1)
+            val_loss = train_bc(ob_expert, ac_expert)
+            ac_model = act(ob_expert)
+            reward = reward_giver.get_reward(ob_expert, ac_model)
+
+            logger.log("{}, {}, {}".format(train_loss, val_loss, np.mean(reward)))
+
     update_target()
 
     episode_rewards = [0.0]
-    saved_mean_reward = None
+    true_rewards = [0.0]
     obs = env.reset()
     reset = True
 
-    with tempfile.TemporaryDirectory() as td:
-        td = checkpoint_path or td
+    if load_path is not None:
+        load_variables(load_path)
+        logger.log('Loaded model from {}'.format(load_path))
+        return act
 
-        model_file = os.path.join(td, "model")
-        model_saved = False
+    for t in range(total_timesteps):
+        # Take action and update exploration to the newest value
+        kwargs = {}
+        if not param_noise:
+            update_eps = exploration.value(t)
+            update_param_noise_threshold = 0.
+        else:
+            update_eps = 0.
+            # Compute the threshold such that the KL divergence between perturbed and non-perturbed
+            # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
+            # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
+            # for detailed explanation.
+            update_param_noise_threshold = -np.log(
+                1. - exploration.value(t) + exploration.value(t) / float(num_actions))
+            kwargs['reset'] = reset
+            kwargs['update_param_noise_threshold'] = update_param_noise_threshold
+            kwargs['update_param_noise_scale'] = True
 
-        if tf.train.latest_checkpoint(td) is not None:
-            load_variables(model_file)
-            logger.log('Loaded model from {}'.format(model_file))
-            model_saved = True
-        elif load_path is not None:
-            load_variables(load_path)
-            logger.log('Loaded model from {}'.format(load_path))
+        # action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
+        action = act(obs)[0]
+        env_action = np.argmax(action)
+        reset = False
 
-        for t in range(total_timesteps):
-            if callback is not None:
-                if callback(locals(), globals()):
-                    break
-            # Take action and update exploration to the newest value
-            kwargs = {}
-            if not param_noise:
-                update_eps = exploration.value(t)
-                update_param_noise_threshold = 0.
+        ob_e, ac_e = expert_dataset.get_action(env.scene.info.id)
+        print(env.scene.info.id, end=', ')
+        rew = reward_giver.get_reward(obs, action)[0][0]
+
+        sum_square = 0.0
+        for i, ob1 in enumerate(list(ob_e)):
+            sum_square = math.pow(list(obs)[i] - ob1, 2)
+            if sum_square > 0.5:
+                print(ob1, list(obs)[i], env.scene.info.id == '15')
+
+        print(sum_square)
+        # print(sum([(ob1 - ob2) ^ 2 for ob1, ob2 in zip(list(ob_e), list(obs))]))
+        action_e = act(ob_e)[0]
+        rew_e = reward_giver.get_reward(ob_e, action_e)[0][0]
+        print('{:>+7.4f}, {:>+7.4f}, {:>4d}, {:>4d}, {}'.format(round(rew, 4), round(rew_e, 4), ac_e,
+                                                                np.argmax(action_e), int((ob_e == obs).all())),
+              end=', ')
+        new_obs, true_rew, done, _ = env.step(env_action)
+        # Store transition in the replay buffer.
+        replay_buffer.add(obs, action, rew, new_obs, float(done))
+        obs = new_obs
+
+        episode_rewards[-1] += rew
+        true_rewards[-1] += true_rew
+        num_episodes = len(episode_rewards)
+        if done:
+            obs = env.reset()
+            episode_rewards.append(0.0)
+            true_rewards.append(0.0)
+            print('episode: {}'.format(num_episodes))
+            reset = True
+
+        if t > learning_starts and t % train_freq == 0:
+            # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
+            if prioritized_replay:
+                experience = replay_buffer.sample(batch_size, beta=beta_schedule.value(t))
+                (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
             else:
-                update_eps = 0.
-                # Compute the threshold such that the KL divergence between perturbed and non-perturbed
-                # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
-                # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
-                # for detailed explanation.
-                update_param_noise_threshold = -np.log(
-                    1. - exploration.value(t) + exploration.value(t) / float(env.action_space.n))
-                kwargs['reset'] = reset
-                kwargs['update_param_noise_threshold'] = update_param_noise_threshold
-                kwargs['update_param_noise_scale'] = True
-            action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
-            env_action = action
-            reset = False
-            new_obs, rew, done, _ = env.step(env_action)
-            # Store transition in the replay buffer.
-            replay_buffer.add(obs, action, rew, new_obs, float(done))
-            obs = new_obs
+                obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(batch_size)
+                weights, batch_idxes = np.ones_like(rewards), None
+            td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+            if prioritized_replay:
+                new_priorities = np.abs(td_errors) + prioritized_replay_eps
+                replay_buffer.update_priorities(batch_idxes, new_priorities)
 
-            episode_rewards[-1] += rew
-            num_episodes = len(episode_rewards)
-            if done:
-                obs = env.reset()
-                episode_rewards.append(0.0)
-                print('episode: {}'.format(num_episodes))
-                reset = True
+        if t > learning_starts and t % target_network_update_freq == 0:
+            # Update target network periodically.
+            update_target()
+            act.save(".\\dataset\\my_model.pkl")
 
-            if t > learning_starts and t % train_freq == 0:
-                # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
-                if prioritized_replay:
-                    experience = replay_buffer.sample(batch_size, beta=beta_schedule.value(t))
-                    (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
-                else:
-                    obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(batch_size)
-                    weights, batch_idxes = np.ones_like(rewards), None
-                td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
-                if prioritized_replay:
-                    new_priorities = np.abs(td_errors) + prioritized_replay_eps
-                    replay_buffer.update_priorities(batch_idxes, new_priorities)
-
-            if t > learning_starts and t % target_network_update_freq == 0:
-                # Update target network periodically.
-                update_target()
-                act.save(".\\dataset\\my_model.pkl")
-
-            mean_100ep_reward = round(np.mean(episode_rewards[-101:-1]), 1)
-            if done and print_freq is not None and len(episode_rewards) % print_freq == 0:
-                logger.record_tabular("steps", t)
-                logger.record_tabular("episodes", num_episodes)
-                logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
-                logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
-                logger.dump_tabular()
+        if done and num_episodes % print_freq == 0:
+            logger.record_tabular("steps", t)
+            logger.record_tabular("episodes", num_episodes)
+            logger.record_tabular("mean 100 episode reward", np.mean(episode_rewards[-101:-1]))
+            logger.record_tabular("mean 100 true reward", np.mean(true_rewards[-101:-1]))
+            logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
+            logger.dump_tabular()
 
     return act

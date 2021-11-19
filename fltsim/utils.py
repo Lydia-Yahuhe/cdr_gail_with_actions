@@ -134,7 +134,7 @@ def build_rt_index(agents):
     p.dimension = 3
     idx = index.Index(properties=p)
     for i, a in enumerate(agents):
-        idx.insert(i, make_bbox(a.position))
+        idx.insert(i, make_bbox(a[1:4]))
     return idx
 
 

@@ -132,68 +132,70 @@ if __name__ == '__main__':
     rew = reward_giver.get_reward(ob_expert, ac_expert)
     print(max(rew), min(rew))
 
-    # col = []
-    # for iter_so_far in tqdm(range(1, num_steps+1)):
-    #     ob_expert, ac_expert = dataset.get_next_batch(32)
-    #     ac_expert = ac_expert.squeeze()
-    #
-    #     ob_batch = ob_expert[:, :]
-    #     ac_batch = []
-    #     for ac_e in ac_expert:
-    #         np.random.shuffle(actions)
-    #         for act in actions:
-    #             if act != ac_e:
-    #                 ac_batch.append(act)
-    #                 break
-    #         else:
-    #             raise NotImplementedError
-    #     ac_batch = np.eye(num_actions)[ac_batch]
-    #     ac_expert = np.eye(num_actions)[ac_expert]
-    #     *train_loss, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
-    #     adam.update(g, 1e-4)
-    #
-    #     # print(train_loss)
-    #     col.append(train_loss)
-    #
-    #     if iter_so_far % 100 == 0:
-    #         train_loss = np.mean(col, axis=0)
-    #         print(train_loss.shape)
-    #         logger.record_tabular("step", iter_so_far)
-    #         logger.record_tabular("g_loss", train_loss[0])
-    #         logger.record_tabular("e_loss", train_loss[1])
-    #         logger.record_tabular("entropy", train_loss[2])
-    #         logger.record_tabular("entropy_loss", train_loss[3])
-    #         logger.record_tabular("g_acc", train_loss[4])
-    #         logger.record_tabular("e_acc", train_loss[5])
-    #         logger.record_tabular("t_loss", train_loss[6])
-    #
-    #         ob_expert, ac_expert = dataset.get_next_batch(-1)
-    #         ac_expert = np.squeeze(ac_expert)
-    #
-    #         ob_batch = ob_expert[:, :]
-    #         ac_batch = []
-    #         for ac_e in ac_expert:
-    #             np.random.shuffle(actions)
-    #             for act in actions:
-    #                 if act != ac_e:
-    #                     ac_batch.append(act)
-    #                     break
-    #             else:
-    #                 raise NotImplementedError
-    #         ac_batch = np.eye(num_actions)[ac_batch]
-    #         ac_expert = np.eye(num_actions)[ac_expert]
-    #
-    #         rewards_expert = reward_giver.get_reward(ob_expert, ac_expert)
-    #         logger.record_tabular("rewards_expert", np.mean(rewards_expert))
-    #
-    #         rewards_batch = reward_giver.get_reward(ob_batch, ac_batch)
-    #         logger.record_tabular("rewards_batch", np.mean(rewards_batch))
-    #
-    #         print(ac_expert.shape, ac_batch.shape, rewards_expert.shape, rewards_batch.shape)
-    #
-    #         logger.dump_tabular()
-    #
-    #         if iter_so_far % 10000 == 0:
-    #             U.save_variables('discriminator_{}_{}'.format(num_steps, num_samples),
-    #                              variables=reward_giver.get_variables())
+    col = []
+    for iter_so_far in tqdm(range(1, num_steps+1)):
+        ob_expert, ac_expert = dataset.get_next_batch(32)
+        ac_expert = ac_expert.squeeze()
+
+        ob_batch = ob_expert[:, :]
+        ac_batch = []
+        for ac_e in ac_expert:
+            np.random.shuffle(actions)
+            for act in actions:
+                if act != ac_e:
+                    ac_batch.append(act)
+                    break
+            else:
+                raise NotImplementedError
+        ac_batch = np.eye(num_actions)[ac_batch]
+        ac_expert = np.eye(num_actions)[ac_expert]
+        *train_loss, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
+        adam.update(g, 1e-4)
+
+        # print(train_loss)
+        col.append(train_loss)
+
+        if iter_so_far % 100 == 0:
+            train_loss = np.mean(col, axis=0)
+            print(train_loss.shape)
+            logger.record_tabular("step", iter_so_far)
+            logger.record_tabular("g_loss", train_loss[0])
+            logger.record_tabular("e_loss", train_loss[1])
+            logger.record_tabular("entropy", train_loss[2])
+            logger.record_tabular("entropy_loss", train_loss[3])
+            logger.record_tabular("g_acc", train_loss[4])
+            logger.record_tabular("e_acc", train_loss[5])
+            logger.record_tabular("t_loss", train_loss[6])
+
+            ob_expert, ac_expert = dataset.get_next_batch(-1)
+            ac_expert = np.squeeze(ac_expert)
+
+            ob_batch = ob_expert[:, :]
+            ac_batch = []
+            for ac_e in ac_expert:
+                np.random.shuffle(actions)
+                for act in actions:
+                    if act != ac_e:
+                        ac_batch.append(act)
+                        break
+                else:
+                    raise NotImplementedError
+            ac_batch = np.eye(num_actions)[ac_batch]
+            ac_expert = np.eye(num_actions)[ac_expert]
+
+            rewards_expert = reward_giver.get_reward(ob_expert, ac_expert)
+            logger.record_tabular("rewards_expert", np.mean(rewards_expert))
+
+            rewards_batch = reward_giver.get_reward(ob_batch, ac_batch)
+            logger.record_tabular("rewards_batch", np.mean(rewards_batch))
+
+            print(ac_expert.shape, ac_batch.shape, rewards_expert.shape, rewards_batch.shape)
+
+            logger.dump_tabular()
+
+            if iter_so_far % 10000 == 0:
+                U.save_variables('discriminator_{}_{}'.format(num_steps, num_samples),
+                                 variables=reward_giver.get_variables())
+
+
 

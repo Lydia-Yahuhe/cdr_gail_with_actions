@@ -40,7 +40,7 @@ class AircraftAgent:
         loc = self.status.location
         return [loc.lng, loc.lat, self.status.alt]
 
-    def do_step(self, now, duration=1, interval=8):
+    def do_step(self, now, duration=1, interval=1):
         status = self.status
         profile, control, guidance = self.profile, self.control, self.guidance
         for t in range(duration):
