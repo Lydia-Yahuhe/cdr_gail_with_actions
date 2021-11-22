@@ -26,7 +26,7 @@ class AircraftAgentSet:
             self.time = start or -1
             self.agents = {}
             for fpl in fpl_list:
-                if supply is not None and fpl.id in supply[1]:
+                if supply is not None and fpl.id not in supply[1]:
                     continue
                 self.agents[fpl.id] = AircraftAgent(fpl)
 

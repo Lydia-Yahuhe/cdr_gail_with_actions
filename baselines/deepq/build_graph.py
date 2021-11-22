@@ -181,10 +181,12 @@ def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None):
         eps = tf.get_variable("eps", (), initializer=tf.constant_initializer(0))
 
         q_values = q_func(observations_ph.get(), num_actions, scope="q_func")
-        deterministic_actions = tf.argmax(q_values, axis=1)
+        # deterministic_actions = tf.argmax(q_values, axis=1)
+        deterministic_actions = tf.nn.softmax(q_values, axis=1)
 
         batch_size = tf.shape(observations_ph.get())[0]
         random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=num_actions, dtype=tf.int64)
+        random_actions = tf.one_hot(random_actions, depth=num_actions)
         chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps
         stochastic_actions = tf.where(chose_random, random_actions, deterministic_actions)
 
@@ -198,7 +200,7 @@ def build_act(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None):
         def act(ob, stochastic=True, update_eps=-1):
             return _act(ob, stochastic, update_eps)
 
-        return act
+        return act, [output_actions, observations_ph, stochastic_ph, update_eps_ph]
 
 
 def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", reuse=None,
@@ -304,13 +306,11 @@ def build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope="deepq", 
         # Put everything together.
         # deterministic_actions = tf.argmax(q_values_perturbed, axis=1)
         deterministic_actions = tf.nn.softmax(q_values_perturbed, axis=1)
-        print(deterministic_actions.shape)
 
         batch_size = tf.shape(observations_ph.get())[0]
         random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=num_actions, dtype=tf.int64)
         random_actions = tf.one_hot(random_actions, depth=num_actions)
         chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps
-        print(random_actions)
         stochastic_actions = tf.where(chose_random, random_actions, deterministic_actions)
 
         output_actions = tf.cond(stochastic_ph, lambda: stochastic_actions, lambda: deterministic_actions)
@@ -394,8 +394,9 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         a bunch of functions to print debug data like q_values.
     """
     if param_noise:
-        act_f, [actions, expert_ob, *phs] = build_act_with_param_noise(make_obs_ph, q_func, num_actions, scope=scope, reuse=reuse,
-                                           param_noise_filter_func=param_noise_filter_func)
+        act_f, [actions, expert_ob, *phs] = build_act_with_param_noise(make_obs_ph, q_func, num_actions,
+                                                                       scope=scope, reuse=reuse,
+                                                                       param_noise_filter_func=param_noise_filter_func)
     else:
         act_f, [actions, expert_ob, *phs] = build_act(make_obs_ph, q_func, num_actions, scope=scope, reuse=reuse)
 
@@ -412,20 +413,19 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         q_t = q_func(obs_t_input.get(), num_actions, scope="q_func", reuse=True)  # reuse parameters from act
         q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name + "/q_func")
 
-        # target q network evalution
+        # target q network evaluation
         q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")
         target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                                scope=tf.get_variable_scope().name + "/target_q_func")
 
         # q scores for actions which we know were selected in the given state.
-        # q_t_selected = tf.reduce_sum(q_t * tf.one_hot(act_t_ph, num_actions), 1)
         q_t_selected = tf.reduce_sum(q_t * act_t_ph, 1)
 
         # compute estimate of best possible value starting from state at t + 1
         if double_q:
             q_tp1_using_online_net = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)
-            q_tp1_best_using_online_net = tf.argmax(q_tp1_using_online_net, 1)
-            q_tp1_best = tf.reduce_sum(q_tp1 * tf.one_hot(q_tp1_best_using_online_net, num_actions), 1)
+            q_tp1_best_using_online_net = tf.nn.softmax(q_tp1_using_online_net, 1)
+            q_tp1_best = tf.reduce_sum(q_tp1 * q_tp1_best_using_online_net, 1)
         else:
             q_tp1_best = tf.reduce_max(q_tp1, 1)
         q_tp1_best_masked = (1.0 - done_mask_ph) * q_tp1_best
@@ -434,6 +434,7 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
         q_t_selected_target = rew_t_ph + gamma * q_tp1_best_masked
 
         # compute the error (potentially clipped)
+        print(q_t_selected.shape, q_t_selected_target.shape)
         td_error = q_t_selected - tf.stop_gradient(q_t_selected_target)
         errors = U.huber_loss(td_error)
         weighted_error = tf.reduce_mean(importance_weights_ph * errors)
@@ -465,25 +466,21 @@ def build_train(make_obs_ph, q_func, num_actions, optimizer, grad_norm_clipping=
                 done_mask_ph,
                 importance_weights_ph
             ],
-            outputs=td_error,
+            outputs=[td_error, weighted_error],
             updates=[optimize_expr]
         )
         update_target = U.function([], [], updates=[update_target_expr])
 
         # for behavior clone
         expert_ac = tf.placeholder(name='expert_ac', shape=[None, ], dtype=tf.int64)
-        # model_ac = tf.placeholder(name='model_ac', shape=[None, num_actions], dtype=tf.float64)
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=actions, labels=expert_ac)
         loss = tf.reduce_mean(loss)
 
-        train_step = tf.train.AdamOptimizer(1e-4).minimize(
-            loss,
-            var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'deepq/perturbed_q_func')
-        )
-        train_bc = U.function([expert_ob, expert_ac], outputs=loss,
-                              givens={phs[0]: False, phs[1]: -1.0, phs[2]: False, phs[3]: False, phs[4]: False},
+        train_step = tf.train.AdamOptimizer(1e-4).minimize(loss, var_list=q_func_vars)
+        train_bc = U.function(inputs=[expert_ob, expert_ac],
+                              outputs=loss,
+                              givens={phs[0]: False, phs[1]: -1.0},
                               updates=[train_step])
-
         q_values = U.function([obs_t_input], q_t)
 
         return act_f, train, update_target, {'q_values': q_values, 'train_bc': train_bc}

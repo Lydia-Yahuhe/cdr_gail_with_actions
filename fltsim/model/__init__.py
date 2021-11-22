@@ -124,3 +124,7 @@ class ConflictScenarioInfo:
         [_, _, h_dist, v_dist] = self.other
         return dict(id=self.id, time=self.time, c_ac=self.conflict_ac,
                     fpl=len(self.fpl_list), h_dist=round(h_dist, 1), v_dist=round(v_dist, 1))
+
+    def to_string(self):
+        print(self.id, self.conflict_ac, self.time, self.start, self.end, len(self.fpl_list))
+

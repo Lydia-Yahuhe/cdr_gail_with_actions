@@ -94,6 +94,20 @@ def load_act(path):
     return ActWrapper.load_act(path)
 
 
+def iterbatches(arrays, *, num_batches=None, batch_size=None, shuffle=True, include_final_partial_batch=True):
+    assert (num_batches is None) != (batch_size is None), 'Provide num_batches or batch_size, but not both'
+    arrays = tuple(map(np.asarray, arrays))
+    n = arrays[0].shape[0]
+    assert all(a.shape[0] == n for a in arrays[1:])
+    inds = np.arange(n)
+    if shuffle:
+        np.random.shuffle(inds)
+    sections = np.arange(0, n, batch_size)[1:] if num_batches is None else num_batches
+    for batch_inds in np.array_split(inds, sections):
+        if include_final_partial_batch or len(batch_inds) == batch_size:
+            yield tuple(a[batch_inds] for a in arrays)
+
+
 def learn(env,
           network,
           seed=None,
@@ -233,8 +247,8 @@ def learn(env,
 
     # Initialize the parameters and copy them to the target network.
     U.initialize()
-    U.load_variables('checkpoint\\discriminator_200000_125', variables=reward_giver.get_variables())
-    print('load variables successfully!')
+    # U.load_variables('checkpoint\\discriminator_200000_125', variables=reward_giver.get_variables())
+    # print('load variables successfully!')
 
     train_bc = debug['train_bc']
     logger.log("Pretraining with Behavior Cloning...")
@@ -252,8 +266,9 @@ def learn(env,
 
     update_target()
 
-    episode_rewards = [0.0]
-    true_rewards = [0.0]
+    episode_rewards, true_rewards = [0.0], [0.0]
+    losses, d_losses = [], []
+
     obs = env.reset()
     reset = True
 
@@ -262,7 +277,7 @@ def learn(env,
         logger.log('Loaded model from {}'.format(load_path))
         return act
 
-    for t in range(total_timesteps):
+    for t in range(1, total_timesteps + 1):
         # Take action and update exploration to the newest value
         kwargs = {}
         if not param_noise:
@@ -281,30 +296,20 @@ def learn(env,
             kwargs['update_param_noise_scale'] = True
 
         # action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
-        action = act(obs)[0]
+        action = act(obs, update_eps=update_eps, **kwargs)[0]
         env_action = np.argmax(action)
         reset = False
 
-        ob_e, ac_e = expert_dataset.get_action(env.scene.info.id)
-        print(env.scene.info.id, end=', ')
-        rew = reward_giver.get_reward(obs, action)[0][0]
+        num = env.scene.info.id
+        ob_e, ac_e = expert_dataset.get_action(num)
+        rew = reward_giver.get_reward(obs, np.eye(num_actions)[env_action])[0][0]
+        rew_e = reward_giver.get_reward(ob_e, np.eye(num_actions)[ac_e])[0][0]
+        print('{:>5d}, {:>+7.4f}, {:>+7.4f}, {}, {:>4d}, {:>4d}'.format(
+            int(num), round(rew, 4), round(rew_e, 4), int((ob_e == obs).all()), ac_e, env_action), end=', ')
 
-        sum_square = 0.0
-        for i, ob1 in enumerate(list(ob_e)):
-            sum_square = math.pow(list(obs)[i] - ob1, 2)
-            if sum_square > 0.5:
-                print(ob1, list(obs)[i], env.scene.info.id == '15')
-
-        print(sum_square)
-        # print(sum([(ob1 - ob2) ^ 2 for ob1, ob2 in zip(list(ob_e), list(obs))]))
-        action_e = act(ob_e)[0]
-        rew_e = reward_giver.get_reward(ob_e, action_e)[0][0]
-        print('{:>+7.4f}, {:>+7.4f}, {:>4d}, {:>4d}, {}'.format(round(rew, 4), round(rew_e, 4), ac_e,
-                                                                np.argmax(action_e), int((ob_e == obs).all())),
-              end=', ')
         new_obs, true_rew, done, _ = env.step(env_action)
         # Store transition in the replay buffer.
-        replay_buffer.add(obs, action, rew, new_obs, float(done))
+        replay_buffer.add(num, obs, action, rew, new_obs, float(done))
         obs = new_obs
 
         episode_rewards[-1] += rew
@@ -321,14 +326,31 @@ def learn(env,
             # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
             if prioritized_replay:
                 experience = replay_buffer.sample(batch_size, beta=beta_schedule.value(t))
-                (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
+                (nums, obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
             else:
-                obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(batch_size)
+                nums, obses_t, actions, rewards, obses_tp1, dones = replay_buffer.sample(batch_size)
                 weights, batch_idxes = np.ones_like(rewards), None
-            td_errors = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+            [td_errors, error] = train(obses_t, actions, rewards, obses_tp1, dones, weights)
+            losses.append(error)
             if prioritized_replay:
                 new_priorities = np.abs(td_errors) + prioritized_replay_eps
                 replay_buffer.update_priorities(batch_idxes, new_priorities)
+
+            if t % train_freq*10 == 0:
+                d_batch_size = len(nums) // 2
+                for ob_batch, ac_batch in iterbatches((obses_t, actions),
+                                                      include_final_partial_batch=False,
+                                                      batch_size=d_batch_size):
+                    real_batch_size = len(ob_batch)
+                    ob_expert, ac_expert = expert_dataset.get_next_batch(batch_samples=nums[:real_batch_size])
+                    # print(ob_batch.shape, ac_batch.shape, ob_expert.shape, ac_expert.shape)
+
+                    ac_batch = np.argmax(ac_batch, axis=-1)
+                    ac_batch = np.eye(num_actions)[ac_batch]
+                    ac_expert = np.eye(num_actions)[ac_expert]
+                    *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
+                    reward_giver.adam.update(g, 1e-3)
+                    d_losses.append(newlosses)
 
         if t > learning_starts and t % target_network_update_freq == 0:
             # Update target network periodically.
@@ -336,11 +358,18 @@ def learn(env,
             act.save(".\\dataset\\my_model.pkl")
 
         if done and num_episodes % print_freq == 0:
+            if len(d_losses) > 0:
+                for (name, loss) in zip(reward_giver.loss_name, np.mean(d_losses, axis=0)):
+                    logger.record_tabular(name, loss)
+
             logger.record_tabular("steps", t)
             logger.record_tabular("episodes", num_episodes)
             logger.record_tabular("mean 100 episode reward", np.mean(episode_rewards[-101:-1]))
             logger.record_tabular("mean 100 true reward", np.mean(true_rewards[-101:-1]))
+            logger.record_tabular("mean 100 loss", np.mean(losses))
             logger.record_tabular("% time spent exploring", int(100 * exploration.value(t)))
             logger.dump_tabular()
+
+            losses, d_losses = [], []
 
     return act

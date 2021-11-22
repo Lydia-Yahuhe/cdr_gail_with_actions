@@ -17,22 +17,19 @@ def train(test=False, path='dqn_policy'):
 
     network = models.mlp(num_hidden=256, num_layers=2)
     if not test:
-
         act = deepq.learn(
             env,
             network=network,  # 隐藏节点，隐藏层数
-            lr=5e-4,
-            batch_size=32,
+            lr=1e-3,
+            batch_size=64,
             total_timesteps=100000,
-            exploration_fraction=0.01,
             buffer_size=100000,
 
-            learning_starts=200,
+            learning_starts=100,
 
             reward_giver=reward_giver,
             expert_dataset=dataset,
 
-            param_noise=True,
             prioritized_replay=True,
         )
         print('Save model to my_model.pkl')
