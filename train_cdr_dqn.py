@@ -15,7 +15,7 @@ def train(test=False, path='dqn_policy'):
     dataset = Mujoco_Dset(expert_path='dataset\\random_policy_125_all.npz')
     reward_giver = TransitionClassifier(env, hidden_size=128, entcoeff=1e-3)
 
-    network = models.mlp(num_hidden=256, num_layers=2)
+    network = models.mlp(num_hidden=64, num_layers=2)
     if not test:
         act = deepq.learn(
             env,

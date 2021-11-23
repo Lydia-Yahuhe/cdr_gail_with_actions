@@ -249,21 +249,6 @@ def learn(env,
     U.initialize()
     # U.load_variables('checkpoint\\discriminator_200000_125', variables=reward_giver.get_variables())
     # print('load variables successfully!')
-
-    train_bc = debug['train_bc']
-    logger.log("Pretraining with Behavior Cloning...")
-    for iter_so_far in tqdm(range(int(1e3))):
-        ob_expert, ac_expert = expert_dataset.get_next_batch(32)
-        train_loss = train_bc(ob_expert, ac_expert)
-
-        if iter_so_far % 100 == 0:
-            ob_expert, ac_expert = expert_dataset.get_next_batch(-1)
-            val_loss = train_bc(ob_expert, ac_expert)
-            ac_model = act(ob_expert)
-            reward = reward_giver.get_reward(ob_expert, ac_model)
-
-            logger.log("{}, {}, {}".format(train_loss, val_loss, np.mean(reward)))
-
     update_target()
 
     episode_rewards, true_rewards = [0.0], [0.0]
@@ -297,7 +282,9 @@ def learn(env,
 
         # action = act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
         action = act(obs, update_eps=update_eps, **kwargs)[0]
-        env_action = np.argmax(action)
+        # env_action = np.argmax(action)
+        env_action = action
+
         reset = False
 
         num = env.scene.info.id
@@ -345,7 +332,6 @@ def learn(env,
                     ob_expert, ac_expert = expert_dataset.get_next_batch(batch_samples=nums[:real_batch_size])
                     # print(ob_batch.shape, ac_batch.shape, ob_expert.shape, ac_expert.shape)
 
-                    ac_batch = np.argmax(ac_batch, axis=-1)
                     ac_batch = np.eye(num_actions)[ac_batch]
                     ac_expert = np.eye(num_actions)[ac_expert]
                     *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
